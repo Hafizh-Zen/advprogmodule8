@@ -2,25 +2,27 @@ use tonic::{transport::Server, Request, Response, Status};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-// 1) Include the generated code
+// 1) Include the generated proto code
 pub mod services {
     tonic::include_proto!("services");
 }
 
-// 2) Bring server traits and message types into scope
+// 2) Bring server traits & message types into scope
 use services::{
-    // Payment service
+    // Payment
     payment_service_server::{PaymentService, PaymentServiceServer},
     PaymentRequest, PaymentResponse,
-    // Transaction service
+    // Transaction
     transaction_service_server::{TransactionService, TransactionServiceServer},
     TransactionRequest, TransactionResponse,
+    // Chat
+    chat_service_server::{ChatService, ChatServiceServer},
+    ChatMessage,
 };
 
-/// 3) Payment service implementation
+/// 3) Implement PaymentService (Unary)
 #[derive(Default)]
 pub struct MyPaymentService;
-
 #[tonic::async_trait]
 impl PaymentService for MyPaymentService {
     async fn process_payment(
@@ -36,51 +38,71 @@ impl PaymentService for MyPaymentService {
     }
 }
 
-/// 4) Transaction service implementation
+/// 4) Implement TransactionService (Server-streaming)
 #[derive(Default)]
 pub struct MyTransactionService;
-
 #[tonic::async_trait]
 impl TransactionService for MyTransactionService {
-    /// The streaming response type
     type GetTransactionHistoryStream = ReceiverStream<Result<TransactionResponse, Status>>;
 
     async fn get_transaction_history(
         &self,
         request: Request<TransactionRequest>,
     ) -> Result<Response<Self::GetTransactionHistoryStream>, Status> {
-        println!(
-            "→ Received transaction history request: {:?}",
-            request.get_ref()
-        );
-
-        // Create a channel with buffer size 4
+        println!("→ Received txn history request: {:?}", request.get_ref());
         let (tx, rx) = mpsc::channel(4);
-
-        // Spawn a task to produce 30 dummy transactions
         tokio::spawn(async move {
             for i in 1..=30 {
                 let record = TransactionResponse {
                     transaction_id: format!("txn{}", i),
                     amount: (i as f64) * 10.0,
                 };
-                // Send it; if the client disconnects, break
-                if tx.send(Ok(record)).await.is_err() {
-                    break;
-                }
-                // Every 10 records, wait 1s to simulate delay
+                if tx.send(Ok(record)).await.is_err() { break; }
                 if i % 10 == 0 {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
         });
-
-        // Wrap the receiver in a Stream and return
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 }
 
-/// 5) In main(), spin up both services
+/// 5) Implement ChatService (Bi-directional streaming)
+#[derive(Default)]
+pub struct MyChatService;
+#[tonic::async_trait]
+impl ChatService for MyChatService {
+    type ChatStream = ReceiverStream<Result<ChatMessage, Status>>;
+
+    async fn chat(
+        &self,
+        request: Request<tonic::Streaming<ChatMessage>>,
+    ) -> Result<Response<Self::ChatStream>, Status> {
+        let mut inbound = request.into_inner();
+        let (tx, rx) = mpsc::channel(32);
+
+        // Spawn a task to echo back each incoming message
+        tokio::spawn(async move {
+            while let Some(Ok(msg)) = inbound.message().await {
+                println!("→ Received chat: {:?}", msg);
+                let reply = ChatMessage {
+                    user_id: msg.user_id.clone(),
+                    message: format!(
+                        "Terima kasih telah melakukan chat kepada CS virtual, Pesan anda akan dibalas pada jam kerja. pesan anda : {}",
+                        msg.message
+                    ),
+                };
+                if tx.send(Ok(reply)).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
+/// 6) Launch all services
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "[::1]:50051".parse()?;
@@ -89,6 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Server::builder()
         .add_service(PaymentServiceServer::new(MyPaymentService::default()))
         .add_service(TransactionServiceServer::new(MyTransactionService::default()))
+        .add_service(ChatServiceServer::new(MyChatService::default()))
         .serve(addr)
         .await?;
 
