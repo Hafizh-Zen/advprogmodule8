@@ -13,6 +13,7 @@ path = "src/grpc_server.rs"
 name = "grpc-client"
 path = "src/grpc_client.rs"
 
+
 [dependencies]
 tonic = "0.7"
 prost = "0.10"
